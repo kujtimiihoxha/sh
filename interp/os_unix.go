@@ -8,6 +8,7 @@ package interp
 import (
 	"context"
 	"errors"
+	"os"
 	"os/user"
 	"strconv"
 	"syscall"
@@ -18,6 +19,36 @@ import (
 
 func mkfifo(path string, mode uint32) error {
 	return unix.Mkfifo(path, mode)
+}
+
+// A FIFO open blocks until its peer opens the other end. On cancellation,
+// hold both ends open until the pending open returns, then close all handles.
+func openFIFO(ctx context.Context, path string, flags int) (*os.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	opened := make(chan struct{})
+	stopped := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		peer, _ := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK, 0)
+		<-opened
+		if peer != nil {
+			peer.Close()
+		}
+		close(stopped)
+	})
+	f, err := os.OpenFile(path, flags, 0)
+	close(opened)
+	if !stop() {
+		<-stopped
+	}
+	if ctx.Err() != nil {
+		if f != nil {
+			f.Close()
+		}
+		return nil, ctx.Err()
+	}
+	return f, err
 }
 
 // defaultAccess is similar to checking the permission bits from [io/fs.FileInfo],

@@ -173,6 +173,9 @@ type Runner struct {
 	// It is consumed by the enclosing statement once it finishes.
 	keepRedirs bool
 
+	// files holds open redirections inherited by child shells.
+	files []*sharedFile
+
 	// Fake signal callbacks
 	callbackErr  string
 	callbackExit string
@@ -1082,6 +1085,7 @@ func (r *Runner) subshell(background bool) *Runner {
 		stdin:          r.stdin,
 		stdout:         r.stdout,
 		stderr:         r.stderr,
+		files:          slices.Clone(r.files),
 		filename:       r.filename,
 		opts:           r.opts,
 		usedNew:        r.usedNew,

@@ -8,12 +8,17 @@ package interp
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"mvdan.cc/sh/v3/syntax"
 )
 
 func mkfifo(path string, mode uint32) error {
 	return fmt.Errorf("unsupported")
+}
+
+func openFIFO(ctx context.Context, path string, flags int) (*os.File, error) {
+	return nil, fmt.Errorf("unsupported")
 }
 
 // defaultAccess attempts to emulate access(2) on Windows.
