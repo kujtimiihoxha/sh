@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -193,5 +194,63 @@ func TestExecETXTBSY(t *testing.T) {
 	}
 	if got := buf.String(); got != "foo\n" {
 		t.Fatalf("want %q, got %q", "foo\n", got)
+	}
+}
+
+type fifoPathWriter chan string
+
+func (w fifoPathWriter) Write(data []byte) (int, error) {
+	w <- string(data)
+	return len(data), nil
+}
+
+func TestCancelUnusedProcessSubstitution(t *testing.T) {
+	t.Parallel()
+	for _, script := range []string{
+		`printf '%s\n' <(printf hello); wait`,
+		`printf '%s\n' >(cat); wait`,
+	} {
+		t.Run(script, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ready := make(fifoPathWriter, 1)
+			runner, err := interp.New(interp.Dir(t.TempDir()), interp.StdIO(nil, ready, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			program := parse(t, nil, script)
+			go func() { done <- runner.Run(ctx, program) }()
+			var path string
+			select {
+			case path = <-ready:
+				path = strings.TrimSpace(path)
+			case <-time.After(5 * time.Second):
+				t.Fatal("process substitution did not start")
+			}
+			defer os.Remove(path)
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					t.Fatalf("Run returned %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("process substitution did not stop")
+			}
+			// Cancellation must release the FIFO as well as the execution handle.
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				_, err := os.Stat(path)
+				if errors.Is(err, os.ErrNotExist) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("process substitution left its FIFO open")
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
 	}
 }

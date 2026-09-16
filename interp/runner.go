@@ -106,6 +106,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 			}
 
 			r2 := r.subshell(true)
+			releaseFiles := r2.retainFiles()
 			stdout := r.origStdout
 			// TODO: note that `man bash` mentions that `wait` only waits for the last
 			// process substitution as long as it is $!; the logic here would mean we wait for all of them.
@@ -116,14 +117,16 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 			r.bgProcs = append(r.bgProcs, bg)
 			go func() {
 				defer func() {
+					releaseFiles()
+					os.Remove(path)
 					*bg.exit = r2.exit
 					close(bg.done)
 				}()
 				switch ps.Op {
 				case syntax.CmdIn:
-					f, err := os.OpenFile(path, os.O_WRONLY, 0)
+					f, err := openFIFO(ctx, path, os.O_WRONLY)
 					if err != nil {
-						r.errf("cannot open fifo for stdout: %v\n", err)
+						r2.exit.fatal(err)
 						return
 					}
 					r2.stdout = f
@@ -131,12 +134,11 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 						if err := f.Close(); err != nil {
 							r.errf("closing stdout fifo: %v\n", err)
 						}
-						os.Remove(path)
 					}()
 				case syntax.CmdOut:
-					f, err := os.OpenFile(path, os.O_RDONLY, 0)
+					f, err := openFIFO(ctx, path, os.O_RDONLY)
 					if err != nil {
-						r.errf("cannot open fifo for stdin: %v\n", err)
+						r2.exit.fatal(err)
 						return
 					}
 					r2.stdin = f
@@ -144,7 +146,6 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 
 					defer func() {
 						f.Close()
-						os.Remove(path)
 					}()
 				default:
 					// Should only happen if we forgot a case above.
@@ -313,6 +314,7 @@ func (r *Runner) stmt(ctx context.Context, st *syntax.Stmt) {
 	r.exit = exitStatus{}
 	if st.Background || st.Disown {
 		r2 := r.subshell(true)
+		releaseFiles := r2.retainFiles()
 		st2 := *st
 		st2.Background = false
 		st2.Disown = false
@@ -324,6 +326,7 @@ func (r *Runner) stmt(ctx context.Context, st *syntax.Stmt) {
 		go func() {
 			r2.Run(ctx, &st2)
 			r2.exit.exiting = false // subshells don't exit the parent shell
+			releaseFiles()
 			*bg.exit = r2.exit
 			close(bg.done)
 		}()
@@ -335,6 +338,7 @@ func (r *Runner) stmt(ctx context.Context, st *syntax.Stmt) {
 
 func (r *Runner) stmtSync(ctx context.Context, st *syntax.Stmt) {
 	oldIn, oldOut, oldErr := r.stdin, r.stdout, r.stderr
+	oldFiles := len(r.files)
 	var closers []io.Closer
 	for _, rd := range st.Redirs {
 		cls, err := r.redir(ctx, rd)
@@ -347,7 +351,9 @@ func (r *Runner) stmtSync(ctx context.Context, st *syntax.Stmt) {
 			break
 		}
 		if cls != nil {
-			closers = append(closers, cls)
+			file := &sharedFile{closer: cls, refs: 1}
+			r.files = append(r.files, file)
+			closers = append(closers, file)
 		}
 	}
 	if r.exit.ok() && st.Cmd != nil {
@@ -377,6 +383,7 @@ func (r *Runner) stmtSync(ctx context.Context, st *syntax.Stmt) {
 		r.keepRedirs = false
 	} else if len(st.Redirs) > 0 {
 		r.stdin, r.stdout, r.stderr = oldIn, oldOut, oldErr
+		r.files = r.files[:oldFiles]
 		for _, cls := range closers {
 			cls.Close()
 		}
@@ -504,6 +511,7 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 				return
 			}
 			r2 := r.subshell(true)
+			releaseFiles := r2.retainFiles()
 			r2.stdout = pw
 			if cm.Op == syntax.PipeAll {
 				r2.stderr = pw
@@ -514,6 +522,7 @@ func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
 			r.stdin = pr
 			var wg sync.WaitGroup
 			wg.Go(func() {
+				defer releaseFiles()
 				r2.stmt(ctx, cm.X)
 				r2.exit.exiting = false // subshells don't exit the parent shell
 				pw.Close()
@@ -1202,7 +1211,7 @@ func (r *Runner) open(ctx context.Context, path string, flags int, mode os.FileM
 	dir, name := filepath.Split(path)
 	dir = strings.TrimSuffix(dir, "/")
 	if dir == r.tempDir && strings.HasPrefix(name, fifoNamePrefix) {
-		return os.OpenFile(path, flags, mode)
+		return openFIFO(ctx, path, flags)
 	}
 
 	f, err := r.openHandler(r.handlerCtx(ctx, handlerKindOpen, todoPos), path, flags, mode)
