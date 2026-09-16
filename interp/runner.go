@@ -115,7 +115,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 				exit: new(exitStatus),
 			}
 			r.bgProcs = append(r.bgProcs, bg)
-			go func() {
+			r.background.Go(func() {
 				defer func() {
 					releaseFiles()
 					os.Remove(path)
@@ -153,7 +153,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 				}
 				r2.stmts(ctx, ps.Stmts)
 				r2.exit.exiting = false // subshells don't exit the parent shell
-			}()
+			})
 			return path, nil
 		},
 	}
@@ -323,13 +323,13 @@ func (r *Runner) stmt(ctx context.Context, st *syntax.Stmt) {
 			exit: new(exitStatus),
 		}
 		r.bgProcs = append(r.bgProcs, bg)
-		go func() {
+		r.background.Go(func() {
 			r2.Run(ctx, &st2)
 			r2.exit.exiting = false // subshells don't exit the parent shell
 			releaseFiles()
 			*bg.exit = r2.exit
 			close(bg.done)
-		}()
+		})
 	} else {
 		r.stmtSync(ctx, st)
 	}

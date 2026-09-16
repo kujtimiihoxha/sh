@@ -23,6 +23,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"mvdan.cc/sh/v3/expand"
@@ -151,6 +152,8 @@ type Runner struct {
 	// Note that each shell only tracks its direct children;
 	// subshells do not share nor inherit the background PIDs they can wait for.
 	bgProcs []bgProc
+	// All subshells share this group, independent of their shell-visible PIDs.
+	background *sync.WaitGroup
 
 	opts runnerOpts
 
@@ -911,8 +914,9 @@ func (r *Runner) Reset() {
 		// emptied below, to reuse the space
 		Vars: r.Vars,
 
-		dirStack: r.dirStack[:0],
-		usedNew:  r.usedNew,
+		dirStack:   r.dirStack[:0],
+		usedNew:    r.usedNew,
+		background: new(sync.WaitGroup),
 	}
 	// Ensure we stop referencing any pointers before we reuse bgProcs.
 	clear(r.bgProcs)
@@ -1049,6 +1053,17 @@ func (r *Runner) Exited() bool {
 	return r.exit.exiting
 }
 
+// WaitBackground waits for background shells and process substitutions started
+// by the runner or any of its subshells. It does not change the shell exit status.
+// Call it after Run returns, before resetting or reusing the runner.
+// To stop background work, cancel the context supplied to Run before waiting.
+// It does not wait for processes that an external program leaves behind.
+func (r *Runner) WaitBackground() {
+	if r.background != nil {
+		r.background.Wait()
+	}
+}
+
 // Subshell makes a copy of the given [Runner], suitable for use concurrently
 // with the original. The copy will have the same environment, including
 // variables and functions, but they can all be modified without affecting the
@@ -1091,6 +1106,7 @@ func (r *Runner) subshell(background bool) *Runner {
 		usedNew:        r.usedNew,
 		exit:           r.exit,
 		lastExit:       r.lastExit,
+		background:     r.background,
 
 		origStdout: r.origStdout, // used for process substitutions
 	}
