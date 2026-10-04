@@ -234,6 +234,10 @@ type Runner struct {
 	// TODO: close a file once "exec" replaces it, like other shells do.
 	keptFiles []io.Closer
 
+	// files holds the files opened by the redirections in effect here,
+	// which background subshells hold on to until they are done.
+	files []*sharedFile
+
 	// Fake signal callbacks
 	callbackErr  string
 	callbackExit string
@@ -1301,6 +1305,7 @@ func (r *Runner) subshell(background bool) *Runner {
 		evalDepth:            r.evalDepth,
 		stmtDepth:            r.stmtDepth,
 		procSubstUses:        slices.Clip(r.procSubstUses),
+		files:                slices.Clip(r.files),
 
 		origStdout: r.origStdout, // used for process substitutions
 	}
