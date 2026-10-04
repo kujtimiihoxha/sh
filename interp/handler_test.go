@@ -994,3 +994,60 @@ func TestWaitBackgroundProcessSubstitution(t *testing.T) {
 		t.Fatalf("process substitution was not cleaned up: %v, %v", entries, err)
 	}
 }
+func TestBackgroundRedirectionLifetime(t *testing.T) {
+	t.Parallel()
+	for _, script := range []string{
+		`{ delayed & } > output; release; wait`,
+		`{ { delayed & wait; } & } > output; release; wait`,
+		`{ delayed >&2 & } 2> output; release; wait`,
+		`{ delayed & } < input > output; release; wait`,
+	} {
+		t.Run(script, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			qt.Assert(t, qt.IsNil(os.WriteFile(filepath.Join(dir, "input"), []byte("input"), 0o600)))
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			released := make(chan struct{})
+			var outputFile *os.File
+			runner, err := interp.New(interp.Dir(dir), interp.ExecHandlers(func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
+				return func(ctx context.Context, args []string) error {
+					switch args[0] {
+					case "release":
+						// The parent has left the redirection scope before the job writes.
+						close(released)
+						return nil
+					case "delayed":
+						select {
+						case <-released:
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+						streams := interp.HandlerCtx(ctx)
+						outputFile, _ = streams.Stdout.(*os.File)
+						if strings.Contains(script, "< input") {
+							_, err := io.Copy(streams.Stdout, streams.Stdin)
+							return err
+						}
+						_, err := io.WriteString(streams.Stdout, "hello")
+						return err
+					default:
+						return next(ctx, args)
+					}
+				}
+			}))
+			qt.Assert(t, qt.IsNil(err))
+			qt.Assert(t, qt.IsNil(runner.Run(ctx, parse(t, nil, script))))
+			output, err := os.ReadFile(filepath.Join(dir, "output"))
+			qt.Assert(t, qt.IsNil(err))
+			want := "hello"
+			if strings.Contains(script, "< input") {
+				want = "input"
+			}
+			qt.Assert(t, qt.Equals(string(output), want))
+			qt.Assert(t, qt.IsNotNil(outputFile))
+			_, err = outputFile.Stat()
+			qt.Assert(t, qt.ErrorIs(err, os.ErrClosed))
+		})
+	}
+}

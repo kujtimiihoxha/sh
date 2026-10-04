@@ -94,6 +94,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 
 			r2 := r.subshell(true)
 			r2.holdProcSubsts()
+			releaseFiles := r2.holdFiles()
 			// Nothing may ever open the process substitution,
 			// so it is only waited on while it may still be used.
 			openCtx, cancel := context.WithCancel(ctx)
@@ -111,6 +112,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 					*bg.exit = r2.exit
 					close(bg.done)
 				}()
+				defer releaseFiles()
 				defer r2.releaseProcSubsts(0)
 				defer func() {
 					r.procSubsts.remove(psf)
@@ -337,11 +339,13 @@ func (r *Runner) stmt(ctx context.Context, st *syntax.Stmt) {
 		}
 		r.bgProcs = append(r.bgProcs, bg)
 		r2.holdProcSubsts()
+		releaseFiles := r2.holdFiles()
 		r.background.Go(func() {
 			r2.Run(ctx, &st2)
 			r2.reportBgStart(0) // in case we didn't get to start a program
 			r2.exitSubshell()
 			r2.releaseProcSubsts(0)
+			releaseFiles()
 			*bg.exit = r2.exit
 			close(bg.done)
 		})
@@ -372,6 +376,49 @@ func (r *Runner) holdProcSubsts() {
 	}
 }
 
+// holdFiles is called on a background subshell before it starts,
+// holding on to the redirection files it inherits until it is done
+// and calls the returned func. Like Bash, which forks a background job
+// with copies of its parent's file descriptors, this lets the job use
+// a file after the statement which opened it is done.
+func (r *Runner) holdFiles() (release func()) {
+	// Stop sharing the list with the parent, as with [Runner.holdProcSubsts].
+	r.files = slices.Clone(r.files)
+	held := r.files
+	for _, f := range held {
+		f.hold()
+	}
+	return func() {
+		for _, f := range held {
+			f.Close()
+		}
+	}
+}
+
+// sharedFile is a file opened by a redirection, which is closed once
+// its statement and all the background subshells holding it are done.
+type sharedFile struct {
+	mu     sync.Mutex
+	closer io.Closer
+	users  int
+}
+
+func (f *sharedFile) hold() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users++
+}
+
+func (f *sharedFile) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users--
+	if f.users == 0 {
+		return f.closer.Close()
+	}
+	return nil
+}
+
 // reportBgStart is called by a background subshell once we first know whether
 // its statement amounts to starting exactly one external program, with its
 // process ID, or with zero when that is not the case. No-op for any other
@@ -392,6 +439,7 @@ func (r *Runner) reportBgStart(pid int) {
 
 func (r *Runner) stmtSync(ctx context.Context, st *syntax.Stmt) {
 	oldIn, oldOut, oldErr := r.stdin, r.stdout, r.stderr
+	oldFiles := len(r.files)
 	var closers []io.Closer
 	if len(st.Redirs) > 0 {
 		r.reportBgStart(0) // opening a file may block
@@ -407,7 +455,9 @@ func (r *Runner) stmtSync(ctx context.Context, st *syntax.Stmt) {
 			break
 		}
 		if cls != nil {
-			closers = append(closers, cls)
+			f := &sharedFile{closer: cls, users: 1}
+			r.files = append(r.files, f)
+			closers = append(closers, f)
 		}
 	}
 	if r.exit.ok() && st.Cmd != nil {
@@ -438,6 +488,7 @@ func (r *Runner) stmtSync(ctx context.Context, st *syntax.Stmt) {
 		r.keptFiles = append(r.keptFiles, closers...)
 	} else if len(st.Redirs) > 0 {
 		r.stdin, r.stdout, r.stderr = oldIn, oldOut, oldErr
+		r.files = r.files[:oldFiles]
 		for _, cls := range closers {
 			cls.Close()
 		}
@@ -456,6 +507,7 @@ func (r *Runner) closeKeptFiles() {
 		cls.Close()
 	}
 	r.keptFiles = nil
+	r.files = nil
 }
 
 func (r *Runner) cmd(ctx context.Context, cm syntax.Command) {
