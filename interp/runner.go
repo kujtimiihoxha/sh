@@ -106,7 +106,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 			// process substitution as long as it is $!; the logic here would mean we wait for all of them.
 			bg := r.newBgProc()
 			r.bgProcs = append(r.bgProcs, bg)
-			go func() {
+			r.background.Go(func() {
 				defer func() {
 					*bg.exit = r2.exit
 					close(bg.done)
@@ -148,7 +148,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 				}
 				r2.stmts(ctx, ps.Stmts)
 				r2.exitSubshell()
-			}()
+			})
 			return psf.Path, nil
 		},
 	}
@@ -337,14 +337,14 @@ func (r *Runner) stmt(ctx context.Context, st *syntax.Stmt) {
 		}
 		r.bgProcs = append(r.bgProcs, bg)
 		r2.holdProcSubsts()
-		go func() {
+		r.background.Go(func() {
 			r2.Run(ctx, &st2)
 			r2.reportBgStart(0) // in case we didn't get to start a program
 			r2.exitSubshell()
 			r2.releaseProcSubsts(0)
 			*bg.exit = r2.exit
 			close(bg.done)
-		}()
+		})
 	} else {
 		r.stmtSync(ctx, st)
 	}

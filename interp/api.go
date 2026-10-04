@@ -202,6 +202,9 @@ type Runner struct {
 	// Note that each shell only tracks its direct children;
 	// subshells do not share nor inherit the background PIDs they can wait for.
 	bgProcs []bgProc
+	// background tracks the background shells and process substitutions
+	// started by this runner and all of its subshells; see [Runner.WaitBackground].
+	background *sync.WaitGroup
 
 	// bgStarted is non-nil when this runner is a background subshell
 	// whose statement may amount to starting one external program;
@@ -1023,6 +1026,7 @@ func (r *Runner) Reset() {
 		accessHandler:        r.accessHandler,
 		procSubstHandler:     r.procSubstHandler,
 		procSubsts:           r.procSubsts,
+		background:           new(sync.WaitGroup),
 
 		// These can be set by functions like [Dir] or [Params], but
 		// builtins can overwrite them; reset the fields to whatever the
@@ -1251,6 +1255,20 @@ func (r *Runner) Exited() bool {
 	return r.exit.exiting
 }
 
+// WaitBackground waits for the background shells and process substitutions
+// started by the runner or any of its subshells, such as "cmd &" or "(cmd &)".
+// It does not change the shell exit status, nor wait for processes which an
+// external program leaves behind.
+//
+// Call it after Run returns, before resetting or reusing the runner.
+// To stop the background work rather than wait for it to finish,
+// cancel the context given to Run.
+func (r *Runner) WaitBackground() {
+	if r.background != nil {
+		r.background.Wait()
+	}
+}
+
 // Subshell makes a copy of the given [Runner], suitable for use concurrently
 // with the original. The copy will have the same environment, including
 // variables and functions, but they can all be modified without affecting the
@@ -1289,6 +1307,7 @@ func (r *Runner) subshell(background bool) *Runner {
 		accessHandler:        r.accessHandler,
 		procSubstHandler:     r.procSubstHandler,
 		procSubsts:           r.procSubsts,
+		background:           r.background,
 		stdin:                r.stdin,
 		stdout:               r.stdout,
 		stderr:               r.stderr,
