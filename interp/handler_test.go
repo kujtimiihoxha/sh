@@ -115,6 +115,23 @@ func virtualDirAccess(ctx context.Context, path string, mode interp.AccessMode) 
 	return interp.DefaultAccessHandler()(ctx, path, mode)
 }
 
+// virtualBinStat pretends that any "vbin" directory holds the program "vtool"
+// and the script "vlib.sh", which only exist via the stat and open handlers.
+func virtualBinStat(ctx context.Context, path string, followSymlinks bool) (fs.FileInfo, error) {
+	if filepath.Base(filepath.Dir(path)) == "vbin" {
+		files := fstest.MapFS{"vtool": {Mode: 0o755}, "vlib.sh": {Mode: 0o644}}
+		return files.Stat(filepath.Base(path))
+	}
+	return interp.DefaultStatHandler()(ctx, path, followSymlinks)
+}
+
+func virtualBinOpen(ctx context.Context, path string, flags int, mode os.FileMode) (io.ReadWriteCloser, error) {
+	if filepath.Base(path) == "vlib.sh" {
+		return nopWriterCloser{strings.NewReader("echo sourced " + path + "\n")}, nil
+	}
+	return interp.DefaultOpenHandler()(ctx, path, flags, mode)
+}
+
 func execPrint(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
@@ -618,6 +635,26 @@ var modCases = []struct {
 		src:  `echo hi > >(read -r line; echo "got $line"); wait`,
 		want: "got hi\n",
 	},
+}
+
+// TestRunnerLookPathStatHandler checks that the builtins which search PATH
+// see the same files as the stat handler.
+func TestRunnerLookPathStatHandler(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH lookups on Windows also try the PATHEXT extensions")
+	}
+	file := parse(t, nil, "PATH=/vbin; type -p vtool; command -v vtool || echo missing; type vtool; . vlib.sh")
+	var cb concBuffer
+	r, err := interp.New(
+		interp.Dir(t.TempDir()), interp.StdIO(nil, &cb, &cb),
+		interp.StatHandler(virtualBinStat), interp.OpenHandler(virtualBinOpen),
+	)
+	qt.Assert(t, qt.IsNil(err))
+	err = r.Run(t.Context(), file)
+	qt.Assert(t, qt.IsNil(err))
+	// TODO: the lookups use os.Stat, so they miss the virtual files.
+	qt.Assert(t, qt.Equals(cb.String(), "missing\ntype: vtool: not found\nsourced vlib.sh\n"))
 }
 
 func TestRunnerHandlers(t *testing.T) {
