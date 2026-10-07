@@ -257,11 +257,14 @@ func runScriptENOEXEC(ctx context.Context, hc HandlerContext, killTimeout time.D
 	return r.Run(ctx, file)
 }
 
-func checkStat(dir, file string, checkExec bool) (string, error) {
+// statFunc gets the information of a file, following symlinks.
+type statFunc = func(path string) (fs.FileInfo, error)
+
+func checkStat(stat statFunc, dir, file string, checkExec bool) (string, error) {
 	if !filepath.IsAbs(file) {
 		file = filepath.Join(dir, file)
 	}
-	info, err := os.Stat(file)
+	info, err := stat(file)
 	if err != nil {
 		return "", err
 	}
@@ -284,19 +287,19 @@ func winHasExt(file string) bool {
 }
 
 // findExecutable returns the path to an existing executable file.
-func findExecutable(dir, file string, exts []string) (string, error) {
+func findExecutable(stat statFunc, dir, file string, exts []string) (string, error) {
 	if len(exts) == 0 {
 		// non-windows
-		return checkStat(dir, file, true)
+		return checkStat(stat, dir, file, true)
 	}
 	if winHasExt(file) {
-		if file, err := checkStat(dir, file, true); err == nil {
+		if file, err := checkStat(stat, dir, file, true); err == nil {
 			return file, nil
 		}
 	}
 	for _, e := range exts {
 		f := file + e
-		if f, err := checkStat(dir, f, true); err == nil {
+		if f, err := checkStat(stat, dir, f, true); err == nil {
 			return f, nil
 		}
 	}
@@ -304,8 +307,8 @@ func findExecutable(dir, file string, exts []string) (string, error) {
 }
 
 // findFile returns the path to an existing file.
-func findFile(dir, file string, _ []string) (string, error) {
-	return checkStat(dir, file, false)
+func findFile(stat statFunc, dir, file string, _ []string) (string, error) {
+	return checkStat(stat, dir, file, false)
 }
 
 // TODO(v4): replace LookPath with LookPathDir, which should use the
@@ -321,14 +324,17 @@ func LookPath(env expand.Environ, file string) (string, error) {
 // such as PWD and PATH.
 //
 // If no error is returned, the returned path must be valid.
+//
+// It uses [os.Stat] rather than a [StatHandlerFunc]. The builtins which search
+// PATH, such as type, command -v, and source, use the stat handler instead.
 func LookPathDir(cwd string, env expand.Environ, file string) (string, error) {
-	return lookPathDir(cwd, env, file, findExecutable)
+	return lookPathDir(os.Stat, cwd, env, file, findExecutable)
 }
 
 // findAny defines a function to pass to [lookPathDir].
-type findAny = func(dir string, file string, exts []string) (string, error)
+type findAny = func(stat statFunc, dir string, file string, exts []string) (string, error)
 
-func lookPathDir(cwd string, env expand.Environ, file string, find findAny) (string, error) {
+func lookPathDir(stat statFunc, cwd string, env expand.Environ, file string, find findAny) (string, error) {
 	if find == nil {
 		panic("no find function found")
 	}
@@ -343,7 +349,7 @@ func lookPathDir(cwd string, env expand.Environ, file string, find findAny) (str
 	}
 	exts := pathExts(env)
 	if strings.ContainsAny(file, chars) {
-		return find(cwd, file, exts)
+		return find(stat, cwd, file, exts)
 	}
 	for _, elem := range pathList {
 		var path string
@@ -354,7 +360,7 @@ func lookPathDir(cwd string, env expand.Environ, file string, find findAny) (str
 		default:
 			path = filepath.Join(elem, file)
 		}
-		if f, err := find(cwd, path, exts); err == nil {
+		if f, err := find(stat, cwd, path, exts); err == nil {
 			return f, nil
 		}
 	}
@@ -363,8 +369,8 @@ func lookPathDir(cwd string, env expand.Environ, file string, find findAny) (str
 
 // scriptFromPathDir is similar to [LookPathDir], with the difference that it looks
 // for both executable and non-executable files.
-func scriptFromPathDir(cwd string, env expand.Environ, file string) (string, error) {
-	return lookPathDir(cwd, env, file, findFile)
+func scriptFromPathDir(stat statFunc, cwd string, env expand.Environ, file string) (string, error) {
+	return lookPathDir(stat, cwd, env, file, findFile)
 }
 
 func pathExts(env expand.Environ) []string {

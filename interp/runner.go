@@ -1489,6 +1489,16 @@ func (r *Runner) lstat(ctx context.Context, name string) (fs.FileInfo, error) {
 	return r.statHandler(r.handlerCtx(ctx, handlerKindStat, todoPos), path, false)
 }
 
+// lookPath is [LookPathDir] via the stat handler, so that the builtins
+// which search PATH see the same files as cd and the test operators.
+func (r *Runner) lookPath(ctx context.Context, file string) (string, error) {
+	return lookPathDir(r.statFunc(ctx), r.Dir, r.writeEnv, file, findExecutable)
+}
+
+func (r *Runner) statFunc(ctx context.Context) statFunc {
+	return func(path string) (fs.FileInfo, error) { return r.stat(ctx, path) }
+}
+
 func (r *Runner) access(ctx context.Context, name string, mode AccessMode) error {
 	path := absPath(r.Dir, name)
 	return r.accessHandler(r.handlerCtx(ctx, handlerKindAccess, todoPos), path, mode)

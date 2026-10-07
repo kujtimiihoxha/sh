@@ -394,7 +394,7 @@ dispatch:
 		args := fp.args()
 		for _, arg := range args {
 			if mode == "-p" || mode == "-P" {
-				if path, err := LookPathDir(r.Dir, r.writeEnv, arg); err == nil {
+				if path, err := r.lookPath(ctx, arg); err == nil {
 					r.outf("%s\n", path)
 				} else {
 					anyNotFound = true
@@ -443,7 +443,7 @@ dispatch:
 				}
 				continue
 			}
-			if path, err := LookPathDir(r.Dir, r.writeEnv, arg); err == nil {
+			if path, err := r.lookPath(ctx, arg); err == nil {
 				if mode == "-t" {
 					r.out("file\n")
 				} else {
@@ -478,7 +478,7 @@ dispatch:
 		if len(args) < 1 {
 			return failf(2, "%v: source: need filename\n", pos)
 		}
-		path, err := scriptFromPathDir(r.Dir, r.writeEnv, args[0])
+		path, err := scriptFromPathDir(r.statFunc(ctx), r.Dir, r.writeEnv, args[0])
 		if err != nil {
 			// If the script was not found in PATH or there was any error, pass
 			// the source path to the open handler so it has a chance to look
@@ -593,7 +593,7 @@ dispatch:
 			last = 0
 			if r.Funcs[arg] != nil || IsBuiltin(arg) {
 				r.outf("%s\n", arg)
-			} else if path, err := LookPathDir(r.Dir, r.writeEnv, arg); err == nil {
+			} else if path, err := r.lookPath(ctx, arg); err == nil {
 				r.outf("%s\n", path)
 			} else {
 				last = 1

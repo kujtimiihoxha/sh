@@ -653,8 +653,7 @@ func TestRunnerLookPathStatHandler(t *testing.T) {
 	qt.Assert(t, qt.IsNil(err))
 	err = r.Run(t.Context(), file)
 	qt.Assert(t, qt.IsNil(err))
-	// TODO: the lookups use os.Stat, so they miss the virtual files.
-	qt.Assert(t, qt.Equals(cb.String(), "missing\ntype: vtool: not found\nsourced vlib.sh\n"))
+	qt.Assert(t, qt.Equals(cb.String(), "/vbin/vtool\n/vbin/vtool\nvtool is /vbin/vtool\nsourced /vbin/vlib.sh\n"))
 }
 
 func TestRunnerHandlers(t *testing.T) {
