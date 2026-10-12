@@ -404,6 +404,10 @@ func pathExts(env expand.Environ) []string {
 //
 // Note that implementations which do not return [os.File] will cause
 // extra files and goroutines for input redirections; see [StdIO].
+//
+// A file opened for a redirection is closed once its statement and any
+// background subshells which inherited the file are done, so Close may be
+// called after [Runner.Run] returns, and from another goroutine.
 type OpenHandlerFunc func(ctx context.Context, path string, flag int, perm os.FileMode) (io.ReadWriteCloser, error)
 
 // TODO(v4): paths passed to [OpenHandlerFunc] should be cleaned.
